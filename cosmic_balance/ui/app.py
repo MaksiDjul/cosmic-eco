@@ -93,6 +93,8 @@ class App:
         self.speed_buttons = [W.Button(s) for s in
                               ["||", "1x", "2x", "4x", "10x", "30x"]]
         self.help_button = W.Button("?")
+        self.minimize_button = W.Button("–")   # en-dash as minimize icon
+        self.close_button = W.Button("✕")      # multiplication X as close icon
 
     # ------------------------------------------------------------------
     @property
@@ -167,6 +169,12 @@ class App:
                 ctx.clicked = None
             elif self.help_button.hit(ctx.clicked):
                 self.show_help = not self.show_help
+                ctx.clicked = None
+            elif self.close_button.hit(ctx.clicked):
+                self.running = False
+                ctx.clicked = None
+            elif self.minimize_button.hit(ctx.clicked):
+                pygame.display.iconify()
                 ctx.clicked = None
             else:
                 for i, b in enumerate(self.speed_buttons):
@@ -272,8 +280,15 @@ class App:
                 W.text(s, value, (sx, 24), f.mono_b, T.TEXT)
                 sx += 165
 
-        self.help_button.draw(s, pygame.Rect(T.BASE_W - 40, 12, 28, 26),
+        bx = T.BASE_W - 120
+        self.help_button.draw(s, pygame.Rect(bx, 12, 28, 26),
                               f, self.ctx.mouse)
+        bx += 30
+        self.minimize_button.draw(s, pygame.Rect(bx, 12, 28, 26),
+                                   f, self.ctx.mouse)
+        bx += 30
+        self.close_button.draw(s, pygame.Rect(bx, 12, 28, 26),
+                                f, self.ctx.mouse)
 
         if w.audit_problems:
             W.text(s, "CONSERVATION AUDIT FAILED", (T.BASE_W - 300, 32),
@@ -323,9 +338,10 @@ class App:
             ("F11", "toggle fullscreen"),
             ("ESC", "close this panel, then quit"),
             ("", ""),
-            ("GALAXY", "click a sector to select it; right-click with a fleet "
-                       "selected to order a move"),
-            ("", "O cycles the map overlay (owner / piracy / price / people)"),
+            ("GALAXY", "click a sector or fleet to select it; right-click to "
+                       "move the selected fleet"),
+            ("", "fleet panel shows stance buttons (patrol/defend/attack); "
+                 "O cycles overlay"),
             ("SECTOR", "inspect the local Market Hub, stations, populations "
                        "and resource nodes"),
             ("", "tax, property-tax and tariff sliders work in your own space"),

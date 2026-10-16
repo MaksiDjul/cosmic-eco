@@ -158,13 +158,19 @@ class MapView(View):
 
         # --- interaction -------------------------------------------------
         if ctx.clicked and rect.collidepoint(ctx.clicked):
-            for sector in world.galaxy:
-                cx, cy = self.hex_centers[sector.coord]
-                if self.point_in_hex((cx, cy), ctx.clicked,
-                                     self.hex_size * 0.92):
-                    ctx.sector = sector
-                    ctx.station = None
-                    break
+            fleet_hit = self._fleet_at(world, ctx.clicked)
+            if fleet_hit is not None:
+                ctx.fleet = fleet_hit
+                ctx.sector = fleet_hit.sector
+                ctx.station = None
+            else:
+                for sector in world.galaxy:
+                    cx, cy = self.hex_centers[sector.coord]
+                    if self.point_in_hex((cx, cy), ctx.clicked,
+                                         self.hex_size * 0.92):
+                        ctx.sector = sector
+                        ctx.station = None
+                        break
         if ctx.right_clicked and rect.collidepoint(ctx.right_clicked):
             for sector in world.galaxy:
                 cx, cy = self.hex_centers[sector.coord]
@@ -191,8 +197,8 @@ class MapView(View):
         if hovered is not None:
             self.draw_tooltip(surf, hovered, ctx)
 
-        W.text(surf, "left-click: select sector    right-click: send selected "
-                     "fleet    O: cycle overlay",
+        W.text(surf, "click: select sector / fleet    right-click: move fleet"
+                     "    O: cycle overlay",
                (rect.x + 10, rect.bottom - 20), f.tiny, T.TEXT_FAINT)
 
     def draw_commodity_picker(self, surf, rect, ctx):
@@ -223,20 +229,29 @@ class MapView(View):
             W.text(surf, f"{len(sector.stations)} st", (0, cy + 7), f.tiny,
                    T.TEXT_DIM, center=cx)
 
-        # fleets present, as small pips around the lower edge
-        pips = {}
-        for fl in sector.fleets:
-            if fl.strength <= 0:
-                continue
-            pips[fl.owner] = pips.get(fl.owner, 0) + fl.effective_strength()
-        if pips:
-            x = cx - (len(pips) * 9) // 2
-            for owner, strength in pips.items():
-                fac = world.factions.get(owner)
+        # fleets present — draw individual ship markers
+        fleet_list = [fl for fl in sector.fleets if fl.strength > 0]
+        if fleet_list:
+            marker_w = max(10, min(16, int(self.hex_size * 0.28)))
+            total_w = len(fleet_list) * (marker_w + 3) - 3
+            fx = cx - total_w // 2
+            fy = int(cy + self.hex_size * 0.32)
+            for fl in fleet_list:
+                fac = world.factions.get(fl.owner)
                 color = fac.color if fac else T.BAD
-                pygame.draw.rect(surf, color,
-                                 (x, cy + self.hex_size * 0.42, 7, 7))
-                x += 9
+                selected = fl is ctx.fleet
+                half = marker_w // 2
+                # diamond / ship shape
+                pts = [(fx + half, fy - half),
+                       (fx + marker_w, fy),
+                       (fx + half, fy + half),
+                       (fx, fy)]
+                pygame.draw.polygon(surf, color, pts)
+                if selected:
+                    pygame.draw.polygon(surf, T.ACCENT, pts, 2)
+                fl._map_rect = pygame.Rect(fx - 2, fy - half - 2,
+                                           marker_w + 4, marker_w + 4)
+                fx += marker_w + 3
 
         if sector.pirate_base is not None:
             pygame.draw.circle(surf, T.BAD,
@@ -303,7 +318,7 @@ class MapView(View):
     def order_move(self, ctx, sector):
         fleet = ctx.fleet
         if fleet is None:
-            ctx.notify("select a fleet on the Military screen first")
+            ctx.notify("click a fleet on the map first")
             return
         if fleet.owner != ctx.world.player_key:
             ctx.notify("that fleet is not yours to command")
@@ -312,11 +327,38 @@ class MapView(View):
         ctx.notify(f"{fleet.name} ordered to {sector.name}")
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _fleet_at(world, pos):
+        for sector in world.galaxy:
+            for fl in sector.fleets:
+                if fl.strength <= 0:
+                    continue
+                r = getattr(fl, "_map_rect", None)
+                if r is not None and r.collidepoint(pos):
+                    return fl
+        return None
+
+    # ------------------------------------------------------------------
     def draw_side(self, surf, rect, ctx):
         f = ctx.fonts
         world = ctx.world
         sector = ctx.sector
-        inner = W.panel(surf, rect, "Selected Sector", f)
+
+        # --- fleet command panel (top) when a fleet is selected ----------
+        fleet = ctx.fleet
+        if fleet is not None and fleet.strength <= 0:
+            ctx.fleet = None
+            fleet = None
+
+        fleet_h = 210 if fleet else 0
+        if fleet:
+            fl_rect = pygame.Rect(rect.x, rect.y, rect.w, fleet_h)
+            self._draw_fleet_panel(surf, fl_rect, ctx)
+
+        # --- sector info panel (remainder) --------------------------------
+        sec_rect = pygame.Rect(rect.x, rect.y + fleet_h, rect.w,
+                               rect.h - fleet_h)
+        inner = W.panel(surf, sec_rect, "Selected Sector", f)
         if sector is None:
             W.text(surf, "no sector selected", (inner.x, inner.y), f.ui,
                    T.TEXT_DIM)
@@ -360,6 +402,8 @@ class MapView(View):
             W.text(surf, "none surveyed", (inner.x, y), f.ui_s, T.TEXT_FAINT)
             y += 18
         for kind, node in sector.nodes.items():
+            if y + 20 > inner.bottom:
+                break
             W.text(surf, kind, (inner.x, y), f.ui_s, T.CLASS_COLORS["RAW"])
             W.bar(surf, pygame.Rect(inner.x + 70, y + 4, 120, 8),
                   node.fill_bp / config.BP, T.CLASS_COLORS["RAW"])
@@ -367,7 +411,7 @@ class MapView(View):
                    f.mono_s, T.TEXT_DIM, right=inner.right)
             y += 20
 
-        # fleets present
+        # fleets present (clickable list)
         y += 10
         W.text(surf, "FORCES PRESENT", (inner.x, y), f.ui_s, T.TEXT_DIM)
         y += 20
@@ -375,17 +419,78 @@ class MapView(View):
         if not present:
             W.text(surf, "no fleets", (inner.x, y), f.ui_s, T.TEXT_FAINT)
         for fl in present[:7]:
+            if y + 18 > inner.bottom - 20:
+                break
             owner = world.factions.get(fl.owner)
+            is_sel = fl is fleet
+            row_rect = pygame.Rect(inner.x - 4, y - 1,
+                                   inner.right - inner.x + 8, 18)
+            if is_sel:
+                pygame.draw.rect(surf, T.PANEL_HI, row_rect)
+                pygame.draw.rect(surf, T.ACCENT, row_rect, 1)
+            elif row_rect.collidepoint(ctx.mouse):
+                pygame.draw.rect(surf, T.PANEL_ALT, row_rect)
+            if ctx.clicked and row_rect.collidepoint(ctx.clicked):
+                ctx.fleet = fl
+                ctx.clicked = None
             pygame.draw.rect(surf, owner.color if owner else T.BAD,
                              (inner.x, y + 4, 8, 8))
-            label = fl.name if fl.is_present() else f"{fl.name} (in transit)"
-            W.text(surf, label, (inner.x + 14, y), f.ui_s, T.TEXT)
+            label = fl.name if fl.is_present() else f"{fl.name} (transit)"
+            W.text(surf, label, (inner.x + 14, y), f.ui_s,
+                   T.TEXT_BRIGHT if is_sel else T.TEXT)
             W.text(surf, f"{fl.effective_strength():,}", (0, y), f.mono_s,
                    T.TEXT, right=inner.right)
             y += 18
 
-        W.text(surf, "Open the Sector screen for the local Market Hub.",
+        W.text(surf, "Click a fleet to select it. Right-click map to move.",
                (inner.x, inner.bottom - 18), f.tiny, T.TEXT_FAINT)
+
+    # ------------------------------------------------------------------
+    def _draw_fleet_panel(self, surf, rect, ctx):
+        f = ctx.fonts
+        world = ctx.world
+        fl = ctx.fleet
+        inner = W.panel(surf, rect, "Fleet Orders", f)
+
+        owner = world.factions.get(fl.owner)
+        pygame.draw.rect(surf, owner.color if owner else T.BAD,
+                         (inner.x, inner.y + 3, 4, 18))
+        W.text(surf, fl.name, (inner.x + 10, inner.y), f.ui_b, T.TEXT_BRIGHT)
+        W.text(surf, owner.name if owner else "?",
+               (inner.x + 10, inner.y + 20), f.ui_s,
+               owner.color if owner else T.TEXT_DIM)
+
+        y = inner.y + 44
+        rows = [
+            ("Strength", f"{fl.effective_strength():,} / {fl.strength:,}"),
+            ("Sector", fl.sector.name),
+            ("Stance", fl.stance.upper()),
+            ("Status", "in transit" if fl.path else "present"),
+        ]
+        if fl.destination:
+            rows.append(("Destination", fl.destination.name))
+        for label, value in rows:
+            W.text(surf, label, (inner.x, y), f.ui_s, T.TEXT_DIM)
+            W.text(surf, str(value), (0, y), f.mono_s, T.TEXT,
+                   right=inner.right)
+            y += 18
+
+        # stance buttons — only for the player's own fleets
+        is_mine = fl.owner == world.player_key
+        y += 6
+        W.text(surf, "STANCE", (inner.x, y), f.ui_s, T.TEXT_DIM)
+        y += 18
+        stances = [PATROL, DEFEND, ATTACK]
+        bx = inner.x
+        bw = (inner.right - inner.x - 8) // 3
+        for i, stance in enumerate(stances):
+            b = self.stance_buttons[i]
+            b.draw(surf, pygame.Rect(bx, y, bw, 24), f, ctx.mouse,
+                   enabled=is_mine, active=(fl.stance == stance))
+            if is_mine and ctx.clicked and b.hit(ctx.clicked):
+                ctx.push("fleet_stance", fleet=fl, stance=stance)
+                ctx.clicked = None
+            bx += bw + 4
 
     # ------------------------------------------------------------------
     def on_key(self, key, ctx):
