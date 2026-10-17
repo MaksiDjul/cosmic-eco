@@ -64,8 +64,6 @@ class PirateBase:
 
         # --- fence the plunder ------------------------------------------
         for key, qty in list(self.hoard.nonzero().items()):
-            if key in ("LABOR",):
-                continue
             share = apply_bp(qty, config.PIRATE_SELL_SHARE_BP)
             if share <= 0:
                 share = qty
@@ -79,12 +77,12 @@ class PirateBase:
 
         # --- buy heavy military components to spawn raiders -------------
         if len(self.raiders) < config.PIRATE_MAX_RAIDERS_PER_BASE:
-            best = min(markets, key=lambda s: s.market.spot("MIL_UNIT"))
+            best = min(markets, key=lambda s: s.market.spot("SHIP_TONNAGE"))
             acc = self.wallet.account(best.market.currency)
-            self.hoard.capacity["MIL_UNIT"] = 10 ** 12
+            self.hoard.capacity["SHIP_TONNAGE"] = 10 ** 12
             o = best.market.submit_buy(
-                "MIL_UNIT", config.PIRATE_BUY_MAX_PER_TICK, acc, self.hoard,
-                self, tag=f"{self.name} rearm")
+                "SHIP_TONNAGE", config.PIRATE_BUY_MAX_PER_TICK, acc,
+                self.hoard, self, tag=f"{self.name} rearm")
             if o:
                 self._orders.append(o)
 
@@ -97,12 +95,12 @@ class PirateBase:
         self.fenced_total += sum(o.value for o in self._orders
                                  if o.side == "sell")
         # Spawn raiders from accumulated military tonnage.
-        units = self.hoard.get("MIL_UNIT")
-        while units >= config.PIRATE_RAIDER_COST_MIL_UNITS and \
+        units = self.hoard.get("SHIP_TONNAGE")
+        while units >= config.PIRATE_RAIDER_COST_TONNAGE and \
                 len(self.raiders) < config.PIRATE_MAX_RAIDERS_PER_BASE:
-            self.ledger.consume(self.hoard, "MIL_UNIT",
-                                config.PIRATE_RAIDER_COST_MIL_UNITS, "raider")
-            units -= config.PIRATE_RAIDER_COST_MIL_UNITS
+            self.ledger.consume(self.hoard, "SHIP_TONNAGE",
+                                config.PIRATE_RAIDER_COST_TONNAGE, "raider")
+            units -= config.PIRATE_RAIDER_COST_TONNAGE
             target = world.rng.choice(
                 world.galaxy.neighbors(self.sector) or [self.sector])
             raider = Fleet(world.pirate_key, target,
@@ -148,11 +146,8 @@ def update_piracy_index(sector, world):
         if world.is_pirate(f.owner):
             raider_strength += f.effective_strength()
         elif f.stance == PATROL:
-            # Patrol stance suppresses with an efficiency bonus.
             patrol_strength += apply_bp(f.effective_strength(),
                                         config.PIRACY_PATROL_EFFICIENCY_BP)
-        else:
-            patrol_strength += f.effective_strength() // 3
 
     target = config.PIRACY_BASE_BP
     target += raider_strength * config.PIRACY_PER_RAIDER_STRENGTH_BP
@@ -191,7 +186,7 @@ def run_interceptions(sector, world, rng: random.Random):
     stolen_units = 0
 
     for key, st in sector.market.settlements.items():
-        if st.traded <= 0 or key == "LABOR":
+        if st.traded <= 0:
             continue
         for order, qty in st.buy_fills:
             if qty <= 0:
@@ -206,8 +201,8 @@ def run_interceptions(sector, world, rng: random.Random):
 
             # Cargo assets may be destroyed outright in the raid.
             if got and rng.randint(1, config.BP) <= config.PIRACY_CARGO_DESTROY_CHANCE_BP:
-                if order.inventory.get("CARGO_UNIT") > 0:
-                    world.ledger.consume(order.inventory, "CARGO_UNIT", 1,
+                if order.inventory.get("SHIP_TONNAGE") > 0:
+                    world.ledger.consume(order.inventory, "SHIP_TONNAGE", 1,
                                          "piracy_destroyed")
 
     if stolen_units:

@@ -1,8 +1,8 @@
 """
 MILITARY & SECURITY (doc 5).
 
-Fleets are abstract strength values built by buying Military Tonnage on the
-open market and crewed by buying Labour Units locally, so this screen is as
+Fleets are abstract strength values built by buying Ship Tonnage on the
+open market and crewed by buying Labour Tokens locally, so this screen is as
 much a logistics report as an order-of-battle.
 """
 
@@ -44,6 +44,7 @@ class MilitaryView(View):
             ("CASH", 100, "r"),
         ])
         self.stance_buttons = [W.Button(s.upper()) for s in STANCES]
+        self.mothball_btn = W.Button("Mothball")
 
     # ------------------------------------------------------------------
     def draw(self, surf, rect, ctx):
@@ -149,6 +150,8 @@ class MilitaryView(View):
             rows = [
                 ("Location", fl.sector.name),
                 ("In transit", "yes" if fl.path else "no"),
+                ("Mothballed", ("YES" if fl.mothballed else "no",
+                                T.WARN if fl.mothballed else T.TEXT_DIM)),
                 ("Raw strength", f"{fl.strength:,}"),
                 ("Effective", f"{fl.effective_strength():,}"),
                 ("Crewing", bp_str(fl.crew_bp())),
@@ -164,12 +167,20 @@ class MilitaryView(View):
             bx = inner.x
             for i, stance in enumerate(STANCES):
                 b = self.stance_buttons[i]
-                b.draw(surf, pygame.Rect(bx, y, 92, 26), f, ctx.mouse,
+                b.draw(surf, pygame.Rect(bx, y, 82, 26), f, ctx.mouse,
                        enabled=mine, active=(fl.stance == stance))
                 if mine and ctx.clicked and b.hit(ctx.clicked):
                     ctx.push("fleet_stance", fleet=fl, stance=stance)
                     ctx.notify(f"{fl.name} -> {stance}")
-                bx += 96
+                bx += 86
+            self.mothball_btn.draw(
+                surf, pygame.Rect(bx, y, 82, 26), f, ctx.mouse,
+                enabled=(mine and fl.can_mothball()),
+                active=fl.mothballed)
+            if mine and ctx.clicked and self.mothball_btn.hit(ctx.clicked):
+                ctx.push("fleet_mothball", fleet=fl,
+                         value=not fl.mothballed)
+                ctx.notify(f"{fl.name}: {'mothballed' if not fl.mothballed else 'reactivated'}")
             y += 34
             if mine:
                 W.text(surf, "Right-click a sector on the Galaxy screen",

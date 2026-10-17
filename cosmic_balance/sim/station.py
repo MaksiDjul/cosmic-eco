@@ -32,6 +32,7 @@ from .fixed import apply_bp, clamp
 from .ledger import Inventory, Wallet
 
 NORMAL, OVERCLOCK, UNDERCLOCK = "normal", "overclock", "underclock"
+LABOR_NORMAL, LABOR_EFFICIENT, LABOR_INEFFICIENT = "labor_normal", "labor_efficient", "labor_inefficient"
 
 
 def _restock_order(per_tick: int, target: int, stock: int) -> int:
@@ -168,6 +169,9 @@ class Station:
 
         # Throughput tuning state
         self.clock = NORMAL
+        self.labor_mode = LABOR_NORMAL
+        self.labor_short_ticks = 0
+        self.labor_surplus_ticks = 0
         self.halt_reason = None
         self.ran_last_tick = False
 
@@ -264,12 +268,6 @@ class Station:
         self._storage_level = self.level
         lvl = max(1, self.level)
         for key, per in self.method.inputs.items():
-            if not COMMODITIES[key].storable:
-                # Abstract Utility Units (labour) cannot be warehoused -- they
-                # expire at the end of the tick they were bought in -- so there
-                # is no point holding more than one tick's draw.
-                self.store.capacity[key] = max(1, per * lvl * 2)
-                continue
             self.store.capacity[key] = max(
                 config.STORAGE_MIN_CAPACITY,
                 per * lvl * config.STORAGE_PER_LEVEL_INPUT_TICKS)
@@ -289,9 +287,8 @@ class Station:
             self.store.capacity.get("MAINT_GOODS", 0),
             config.STORAGE_MIN_CAPACITY,
             mg_need * config.MAINT_BUFFER_TICKS * 2)
-        # Cargo assets and construction goods need somewhere to live too.
-        self.store.capacity["CARGO_UNIT"] = max(
-            self.store.capacity.get("CARGO_UNIT", 0),
+        self.store.capacity["SHIP_TONNAGE"] = max(
+            self.store.capacity.get("SHIP_TONNAGE", 0),
             config.STATION_CARGO_PER_LEVEL * lvl + 2)
         # Construction goods need a bay big enough to take back a whole bill
         # of materials: a completed or abandoned project returns whatever it
@@ -327,7 +324,7 @@ class Station:
         lvl = max(1, self.level)
         for key, per in self.method.inputs.items():
             if key == "LABOR":
-                continue           # labour is bought fresh every tick
+                continue           # labour tokens seeded from population
             self.ledger.produce(self.store, key, per * lvl * ticks,
                                 "scenario_seed")
         for key in config.MAINTENANCE_PER_LEVEL_BP:
@@ -340,7 +337,7 @@ class Station:
         self.ledger.produce(self.store, "MAINT_GOODS",
                             mg_need * config.MAINT_BUFFER_TICKS,
                             "scenario_seed")
-        self.ledger.produce(self.store, "CARGO_UNIT",
+        self.ledger.produce(self.store, "SHIP_TONNAGE",
                             config.STATION_CARGO_PER_LEVEL * lvl,
                             "scenario_seed")
 
@@ -355,25 +352,40 @@ class Station:
     # throughput factors
     # ------------------------------------------------------------------
     def output_factor_bp(self) -> int:
+        base = config.NORMAL_BP
         if self.clock == OVERCLOCK:
-            return config.OVERCLOCK_THROUGHPUT_BP
-        if self.clock == UNDERCLOCK:
-            return config.UNDERCLOCK_THROUGHPUT_BP
-        return config.NORMAL_BP
+            base = config.OVERCLOCK_THROUGHPUT_BP
+        elif self.clock == UNDERCLOCK:
+            base = config.UNDERCLOCK_THROUGHPUT_BP
+        if self.labor_mode == LABOR_EFFICIENT:
+            base = (base * config.LABOR_EFFICIENT_OUTPUT_BP) // config.BP
+        elif self.labor_mode == LABOR_INEFFICIENT:
+            base = (base * config.LABOR_INEFFICIENT_OUTPUT_BP) // config.BP
+        return base
 
-    def input_factor_bp(self) -> int:
+    def input_factor_bp(self, key=None) -> int:
+        base = config.NORMAL_BP
         if self.clock == OVERCLOCK:
-            # Disproportionate penalty to input efficiency (doc 3.3).
-            return config.OVERCLOCK_INPUT_PENALTY_BP
-        if self.clock == UNDERCLOCK:
-            return config.UNDERCLOCK_INPUT_BP
-        return config.NORMAL_BP
+            base = config.OVERCLOCK_INPUT_PENALTY_BP
+        elif self.clock == UNDERCLOCK:
+            base = config.UNDERCLOCK_INPUT_BP
+        if key == "LABOR":
+            if self.labor_mode == LABOR_EFFICIENT:
+                base = (base * config.LABOR_EFFICIENT_LABOR_BP) // config.BP
+            elif self.labor_mode == LABOR_INEFFICIENT:
+                base = (base * config.LABOR_INEFFICIENT_LABOR_BP) // config.BP
+        elif key is not None and key not in config.MAINTENANCE_PER_LEVEL_BP:
+            if self.labor_mode == LABOR_EFFICIENT:
+                base = (base * config.LABOR_EFFICIENT_INPUT_BP) // config.BP
+            elif self.labor_mode == LABOR_INEFFICIENT:
+                base = (base * config.LABOR_INEFFICIENT_INPUT_BP) // config.BP
+        return base
 
     # ------------------------------------------------------------------
     # shipping capacity (doc 3.4 "Abstract Shipping Fleets")
     # ------------------------------------------------------------------
     def cargo_units(self) -> int:
-        return self.store.get("CARGO_UNIT")
+        return self.store.get("SHIP_TONNAGE")
 
     def recipe_is_viable(self, market) -> bool:
         """Would one tick of production pay for its own inputs right now?"""
@@ -386,7 +398,7 @@ class Station:
 
     def trade_volume_budget(self) -> int:
         return (config.STATION_BASE_TRADE_VOLUME +
-                self.cargo_units() * config.CARGO_VOLUME_PER_UNIT)
+                self.cargo_units() * config.TONNAGE_VOLUME_PER_UNIT)
 
     # ------------------------------------------------------------------
     # PHASE 1: order submission
@@ -406,15 +418,6 @@ class Station:
             return COMMODITIES[key].volume * qty
 
         def cap_by_volume(key, qty, budget):
-            """Clamp an order to the shipping budget.
-
-            Commodities of zero volume -- the Abstract Utility Units, i.e.
-            labour -- are exempt: a workforce is not freight, it lives in the
-            sector. Charging labour against the cargo hold silently prevented
-            plants from hiring at all once their budget was spent on exports,
-            which read as a labour shortage while labour sat unsold at the
-            price floor.
-            """
             unit = COMMODITIES[key].volume
             if unit <= 0:
                 return qty
@@ -458,6 +461,11 @@ class Station:
                 budget_volume -= vol(key, o.qty)
 
         # --- 2b. buy MAINT_GOODS (station-level maintenance) -------------
+        # Habitation stations draw maintenance money from population cash.
+        mg_acc = acc
+        if self.is_habitation and self.sector.pops:
+            pop = max(self.sector.pops, key=lambda p: p.cash)
+            mg_acc = pop.wallet.account(market.currency)
         mg_per_tick = config.MAINT_GOODS_PER_LEVEL * max(1, self.level)
         mg_target = max(1, mg_per_tick * config.MAINT_BUFFER_TICKS)
         mg_short = _restock_order(mg_per_tick, mg_target,
@@ -467,7 +475,7 @@ class Station:
                                 min(mg_short, self.store.space("MAINT_GOODS")),
                                 budget_volume)
             if qty > 0:
-                o = market.submit_buy("MAINT_GOODS", qty, acc, self.store,
+                o = market.submit_buy("MAINT_GOODS", qty, mg_acc, self.store,
                                       self, tag=f"{self.name} maint")
                 if o:
                     self._buy_orders.append(o)
@@ -484,11 +492,7 @@ class Station:
         lvl = max(1, self.level)
         for key, per in self.method.inputs.items():
             per_tick = per * lvl
-            # Buffering only makes sense for goods that keep. Stocking six
-            # ticks of labour would burn five of them and triple the apparent
-            # wage bill of the whole sector.
-            buffer_ticks = config.INPUT_BUFFER_TICKS \
-                if COMMODITIES[key].storable else 1
+            buffer_ticks = config.INPUT_BUFFER_TICKS
             if not viable:
                 buffer_ticks = 1
             target = per_tick * buffer_ticks
@@ -504,11 +508,11 @@ class Station:
                 self._buy_orders.append(o)
                 budget_volume -= vol(key, o.qty)
 
-        # --- 4. top up abstract cargo assets ----------------------------
+        # --- 4. top up ship tonnage for shipping ----------------------------
         want_cargo = config.STATION_CARGO_PER_LEVEL * lvl - self.cargo_units()
         if want_cargo > 0:
             qty = min(want_cargo, config.STATION_CARGO_BUY_MAX_PER_TICK)
-            o = market.submit_buy("CARGO_UNIT", qty, acc, self.store, self,
+            o = market.submit_buy("SHIP_TONNAGE", qty, acc, self.store, self,
                                   tag=f"{self.name} cargo")
             if o:
                 self._buy_orders.append(o)
@@ -694,26 +698,48 @@ class Station:
             self.good_ticks = 0
 
         if self.bad_ticks >= config.CLOCK_UNDERCLOCK_AFTER:
-            # Net profitability has been below zero -> throttle to limit losses.
             self.clock = UNDERCLOCK
         elif (self.output_depleted and
               self.good_ticks >= config.CLOCK_OVERCLOCK_AFTER and
               self._has_input_headroom()):
-            # Output warehouse completely depleted post-market and sustainably
-            # profitable -> push harder at a worse input ratio.
             self.clock = OVERCLOCK
         else:
             self.clock = NORMAL
 
-    def _has_input_headroom(self) -> bool:
-        """Only overclock when the extra input draw can actually be fed.
+        self._decide_labor_mode()
 
-        Overclocking into a shortage starves the plant and deepens the very
-        upstream scarcity that made its output so valuable in the first place.
-        """
+    def _decide_labor_mode(self):
+        lvl = max(1, self.level)
+        labor_per = self.method.inputs.get("LABOR", 0)
+        if labor_per <= 0:
+            self.labor_mode = LABOR_NORMAL
+            return
+        labor_need = labor_per * lvl
+        labor_stock = self.store.get("LABOR")
+        if labor_stock < labor_need:
+            self.labor_short_ticks += 1
+            self.labor_surplus_ticks = 0
+        elif labor_stock >= labor_need * config.LABOR_SURPLUS_STOCK_TICKS:
+            self.labor_surplus_ticks += 1
+            self.labor_short_ticks = 0
+        else:
+            self.labor_short_ticks = 0
+            self.labor_surplus_ticks = 0
+
+        if self.labor_short_ticks >= config.LABOR_MODE_SHORTAGE_TICKS:
+            self.labor_mode = LABOR_EFFICIENT
+        elif self.labor_surplus_ticks >= config.LABOR_MODE_SURPLUS_TICKS:
+            self.labor_mode = LABOR_INEFFICIENT
+        else:
+            self.labor_mode = LABOR_NORMAL
+
+    def _has_input_headroom(self) -> bool:
         lvl = max(1, self.level)
         for key, per in self.method.inputs.items():
-            need = (per * lvl * config.OVERCLOCK_INPUT_PENALTY_BP) // config.BP
+            factor = config.OVERCLOCK_INPUT_PENALTY_BP
+            if key == "LABOR" and self.labor_mode == LABOR_INEFFICIENT:
+                factor = (factor * config.LABOR_INEFFICIENT_LABOR_BP) // config.BP
+            need = (per * lvl * factor) // config.BP
             if self.store.get(key) < need * config.OVERCLOCK_MIN_INPUT_TICKS:
                 return False
         return True
@@ -736,7 +762,8 @@ class Station:
         # maintenance famine is survivable instead of terminal.
         cond_bp = max(config.CONDITION_MIN_EFFICIENCY_BP,
                       (self.condition * config.BP) // config.CONDITION_MAX)
-        need = self.method.scaled_inputs(lvl, self.input_factor_bp())
+        need = {k: max(0, (v * lvl * self.input_factor_bp(k)) // config.BP)
+                for k, v in self.method.inputs.items()}
         plan = self.method.scaled_outputs(
             lvl, (self.output_factor_bp() * cond_bp) // config.BP)
         if not plan:
@@ -844,13 +871,13 @@ class Station:
                 need += qty * market.spot(key)
         return need * config.WORKING_CAPITAL_TICKS
 
-    def pay_dividends(self, world) -> int:
-        """Distribute surplus cash to the holders of the 100 equity shares.
+    @property
+    def is_habitation(self) -> bool:
+        return self.method.key == config.HABITATION_METHOD_KEY
 
-        Essential to the closed currency system: without it a profitable
-        station is a monetary sink that slowly starves the rest of the galaxy
-        of circulating money.
-        """
+    def pay_dividends(self, world) -> int:
+        if self.is_habitation:
+            return 0
         from .market import MarketHub
         market = self.sector.market
         acc = self.wallet.account(market.currency)
@@ -945,6 +972,12 @@ class Station:
     # ------------------------------------------------------------------
     # downgrade / destruction
     # ------------------------------------------------------------------
+    def downsize(self, world):
+        """Player-initiated downgrade: shed one level, never destroy."""
+        if self.level <= 1:
+            return
+        self._downgrade(world)
+
     def _downgrade(self, world):
         """Shed one level; destroy the station if already at level 1."""
         if self.level <= 1:
@@ -993,7 +1026,10 @@ class Station:
             return f"building L{self.construction.target_level} " \
                    f"({self.construction.progress_bp() // 100}%)"
         if self.ran_last_tick:
-            return self.clock
+            parts = [self.clock]
+            if self.labor_mode != LABOR_NORMAL:
+                parts.append(self.labor_mode)
+            return " ".join(parts)
         return self.halt_reason or "idle"
 
     def __repr__(self):

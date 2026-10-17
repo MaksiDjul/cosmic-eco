@@ -35,7 +35,7 @@ FX_RATE_SCALE = 1_000_000       # exchange rates are stored * this scale
 # 1. SIMULATION CLOCK
 # ---------------------------------------------------------------------------
 
-DEFAULT_SPEED_INDEX = 2         # index into SPEED_STEPS at startup
+DEFAULT_SPEED_INDEX = 0         # index into SPEED_STEPS at startup (paused)
 SPEED_STEPS = [0.0, 1.0, 2.0, 4.0, 10.0, 30.0]  # selectable ticks per second
 
 HISTORY_SAMPLE_INTERVAL = 4     # record a history datapoint every N ticks
@@ -86,15 +86,14 @@ COMMODITY_DEFS = [
     ("ELECTRONICS", "HITECH",     "Electronics",        17_000,   3_200,   190_000, True,  2),
     ("HULLPARTS",   "HITECH",     "Hull Components",    17_000,   3_200,   190_000, True,  2),
 
-    ("CARGO_UNIT",  "LOGISTIC",   "Cargo Tonnage",      80_000,  15_000,   900_000, True,  3),
-    ("MIL_UNIT",    "LOGISTIC",   "Military Tonnage",  115_000,  22_000, 1_300_000, True,  3),
+    ("SHIP_TONNAGE","LOGISTIC",   "Ship Tonnage",       95_000,  18_000, 1_100_000, True,  3),
 
     ("FOOD",        "SUSTENANCE", "Food Rations",          960,     190,    12_000, True,  1),
     ("GOODS",       "SUSTENANCE", "Consumer Goods",      6_300,   1_200,    70_000, True,  1),
 
     ("MAINT_GOODS", "REFINED",    "Maintenance Supplies", 5_000,   1_000,    55_000, True,  1),
 
-    ("LABOR",       "UTILITY",    "Labour Units",        1_900,     350,    22_000, False, 0),
+    ("LABOR",       "UTILITY",    "Labour Tokens",       1_900,     350,    22_000, True,  1),
 ]
 
 # Commodities accepted by a Construction Warehouse (doc 3.3 "Physical
@@ -192,6 +191,7 @@ FX_LEGACY_CONVERSION_BP = 2_500   # 25% of the stranded balance per tick
 # ---------------------------------------------------------------------------
 
 STATION_MAX_LEVEL = 20
+BALANCE_MAX_LEVEL = 5               # solver caps station levels to keep scenarios grounded
 # Each level multiplies the base recipe throughput by 100% (doc 3.3).
 LEVEL_THROUGHPUT_MULT_BP = 10_000   # +100% of base per level
 
@@ -201,7 +201,7 @@ STORAGE_PER_LEVEL_OUTPUT_TICKS = 14   # ticks of output production held
 STORAGE_MIN_CAPACITY = 40             # floor so tiny recipes still have room
 
 # Input safety buffer (doc 3.3 "Inventory Management")
-INPUT_BUFFER_TICKS = 6                # aim to hold 6 ticks of every input
+INPUT_BUFFER_TICKS = 5                # aim to hold 5 ticks of every input
 #
 # Restocking is SPREAD over this many ticks rather than ordered all at once,
 # and this matters far more than it looks. An order book is the only signal the
@@ -240,6 +240,20 @@ CLOCK_OVERCLOCK_AFTER = 3             # consecutive good ticks before pushing
 # Never overclock into an input shortage: the extra draw would simply starve
 # the plant and deepen the upstream scarcity it is reacting to.
 OVERCLOCK_MIN_INPUT_TICKS = 2
+
+# Labour-Efficient / Labour-Inefficient Modes
+# When labour is scarce, sacrifice throughput for labour savings.
+# When labour is cheap and well-stocked, spend more for extra output.
+# These stack multiplicatively with overclock/underclock.
+LABOR_EFFICIENT_OUTPUT_BP = 8_500     # 85% output
+LABOR_EFFICIENT_INPUT_BP = 8_500      # 85% non-maintenance, non-labour inputs
+LABOR_EFFICIENT_LABOR_BP = 7_000      # 70% labour cost
+LABOR_INEFFICIENT_OUTPUT_BP = 11_500  # 115% output
+LABOR_INEFFICIENT_INPUT_BP = 11_500   # 115% non-maintenance, non-labour inputs
+LABOR_INEFFICIENT_LABOR_BP = 13_000   # 130% labour cost
+LABOR_MODE_SHORTAGE_TICKS = 3         # ticks of labour shortage to enter efficient
+LABOR_MODE_SURPLUS_TICKS = 3          # ticks of labour surplus to enter inefficient
+LABOR_SURPLUS_STOCK_TICKS = 4         # need >= this many ticks of labour stocked
 
 # Maintenance (doc 3.3 "Operational Costs") -- a fixed baseline of maintenance
 # commodities purchased and consumed per LEVEL every tick, regardless of
@@ -344,9 +358,9 @@ CONSTRUCTION_MAX_ORDER_PER_TICK = 40  # throttle so one build cannot corner a ma
 CONSTRUCTION_ABANDON_TICKS = 150      # ticks of zero progress before giving up
 
 # Station shipping capability (doc 3.4 "Abstract Shipping Fleets")
-# Cargo units are an ASSET, not a consumable: they are only lost to piracy.
-STATION_CARGO_PER_LEVEL = 2           # target cargo units held per level
-CARGO_VOLUME_PER_UNIT = 400           # commodity volume movable per cargo unit
+# Ship tonnage is an ASSET, not a consumable: it is only lost to piracy.
+STATION_CARGO_PER_LEVEL = 2           # target tonnage held per level
+TONNAGE_VOLUME_PER_UNIT = 400         # commodity volume movable per tonnage unit
 STATION_CARGO_BUY_MAX_PER_TICK = 1
 # A bootstrap allowance so a brand-new station with zero cargo assets can
 # still trade (and therefore buy its first cargo unit) instead of deadlocking.
@@ -527,6 +541,10 @@ POP_DECLINE_SATISFACTION_BP = 6_000   # <60% satisfied -> shrink
 # A pop keeps a cash war-chest rather than spending to zero every tick.
 POP_SAVINGS_FLOOR_BP = 1_200          # retain 12% of cash as savings
 POP_CONSUMPTION_STORAGE_TICKS = 4     # consumption warehouse depth
+# Dynamic cash reserve: pops set aside enough cash to cover essential costs
+# before spending on non-essential goods (luxury demand).
+POP_RESERVE_FOOD_TICKS = 5           # ticks of food costs reserved
+POP_RESERVE_MAINT_TICKS = 5          # ticks of habitat maintenance costs reserved
 
 # ELASTIC (LUXURY) DEMAND -- and this one is not a nicety, it is what closes
 # the monetary circuit.
@@ -597,11 +615,17 @@ NODE_DEFAULT_CAPACITY = 400_000
 # 9. MILITARY & COMBAT  (doc 5.1, 5.2)
 # ---------------------------------------------------------------------------
 
-FLEET_STRENGTH_PER_MIL_UNIT = 10      # abstract combat strength per tonne
-FLEET_CREW_LABOR_PER_STRENGTH = 2     # labour units/tick to keep crews aboard
+FLEET_STRENGTH_PER_TONNAGE = 10       # abstract combat strength per ship tonne
+FLEET_CREW_LABOR_PER_STRENGTH = 2     # labour tokens/tick to keep crews aboard
 FLEET_UNCREWED_EFFICIENCY_BP = 3_500  # 35% effectiveness when unmanned
-MILBASE_MIL_BUY_MAX_PER_TICK = 3
-MILBASE_LABOR_BUFFER_TICKS = 1        # labour cannot be stockpiled
+MILBASE_TONNAGE_BUY_PER_TICK = 0      # base buy rate; actual = 1 + level
+MILBASE_LABOR_BUFFER_TICKS = 5        # labour tokens are now storable
+MILBASE_MAINT_GOODS_PER_STRENGTH = 1  # MAINT_GOODS per 100 fleet strength/tick
+MILBASE_FLEET_CAP_PER_LEVEL = 80      # max fleet strength per base level
+
+# Mothballing: fleets at home base can mothball to cut costs.
+MOTHBALL_COST_BP = 2_500              # 25% of normal labour/maint costs
+MOTHBALL_COMBAT_BP = 2_500            # 25% of normal combat power
 
 # Sustained Engagements (doc 5.2): long strategic campaigns, not instant wipes.
 COMBAT_ATTRITION_BP = 220             # 2.2% of the enemy's effective strength
@@ -640,7 +664,7 @@ PIRACY_COMBAT_CASUALTY_BP = 45        # asymmetric guerrilla warfare: low losses
 
 # The Pirate Loop (doc 5.3)
 PIRATE_SELL_SHARE_BP = 3_500          # fences 35% of its hoard per tick
-PIRATE_RAIDER_COST_MIL_UNITS = 4      # mil tonnage required to spawn a raider
+PIRATE_RAIDER_COST_TONNAGE = 4        # ship tonnage required to spawn a raider
 PIRATE_RAIDER_STRENGTH = 28
 PIRATE_MAX_RAIDERS_PER_BASE = 14
 PIRATE_BUY_MAX_PER_TICK = 2

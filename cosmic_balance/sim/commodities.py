@@ -141,15 +141,11 @@ PRODUCTION_METHODS = {
                          inputs={"LABOR": 4}, outputs={},
                          short="HAB"),
 
-        # --- Logistical & Military Asset Units (shipyards only) ---
-        ProductionMethod("cargo_yard", "Cargo Shipyard",
-                         inputs={"HULLPARTS": 4, "ELECTRONICS": 2, "FUEL": 3,
-                                 "LABOR": 12},
-                         outputs={"CARGO_UNIT": 2}, short="CRG"),
-        ProductionMethod("mil_yard", "Military Shipyard",
-                         inputs={"HULLPARTS": 5, "ELECTRONICS": 4, "FUEL": 4,
-                                 "LABOR": 14},
-                         outputs={"MIL_UNIT": 2}, short="MIL"),
+        # --- Ship Tonnage (single unified shipyard) ---
+        ProductionMethod("shipyard", "Shipyard",
+                         inputs={"HULLPARTS": 5, "ELECTRONICS": 3, "FUEL": 4,
+                                 "LABOR": 13},
+                         outputs={"SHIP_TONNAGE": 3}, short="SHP"),
     ]
 }
 

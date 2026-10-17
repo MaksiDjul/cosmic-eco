@@ -38,6 +38,7 @@ class MapView(View):
         self.commodity_buttons = []
         self.stance_buttons = [W.Button(s.upper()) for s in
                                (PATROL, DEFEND, ATTACK)]
+        self.mothball_btn = W.Button("Mothball")
 
     # ------------------------------------------------------------------
     def draw(self, surf, rect, ctx):
@@ -253,6 +254,20 @@ class MapView(View):
                                            marker_w + 4, marker_w + 4)
                 fx += marker_w + 3
 
+        # station entity markers (left side of tile)
+        if self.hex_size > 30:
+            mx = int(cx - self.hex_size * 0.55)
+            my = int(cy - self.hex_size * 0.1)
+            has_hab = any(st.method.key == config.HABITATION_METHOD_KEY
+                         for st in sector.stations)
+            has_mil = any(True for _ in world.bases if _.sector is sector)
+            if has_hab:
+                pygame.draw.rect(surf, T.GOOD, (mx, my, 6, 6))
+                mx += 9
+            if has_mil:
+                pts = [(mx, my + 6), (mx + 3, my), (mx + 6, my + 6)]
+                pygame.draw.polygon(surf, T.WARN, pts)
+
         if sector.pirate_base is not None:
             pygame.draw.circle(surf, T.BAD,
                                (int(cx + self.hex_size * 0.5),
@@ -461,17 +476,19 @@ class MapView(View):
                owner.color if owner else T.TEXT_DIM)
 
         y = inner.y + 44
+        moth_label = "MOTHBALLED" if fl.mothballed else ""
         rows = [
             ("Strength", f"{fl.effective_strength():,} / {fl.strength:,}"),
             ("Sector", fl.sector.name),
             ("Stance", fl.stance.upper()),
-            ("Status", "in transit" if fl.path else "present"),
+            ("Status", moth_label or ("in transit" if fl.path else "present")),
         ]
         if fl.destination:
             rows.append(("Destination", fl.destination.name))
         for label, value in rows:
             W.text(surf, label, (inner.x, y), f.ui_s, T.TEXT_DIM)
-            W.text(surf, str(value), (0, y), f.mono_s, T.TEXT,
+            color = T.WARN if value == "MOTHBALLED" else T.TEXT
+            W.text(surf, str(value), (0, y), f.mono_s, color,
                    right=inner.right)
             y += 18
 
@@ -482,7 +499,7 @@ class MapView(View):
         y += 18
         stances = [PATROL, DEFEND, ATTACK]
         bx = inner.x
-        bw = (inner.right - inner.x - 8) // 3
+        bw = (inner.right - inner.x - 12) // 4
         for i, stance in enumerate(stances):
             b = self.stance_buttons[i]
             b.draw(surf, pygame.Rect(bx, y, bw, 24), f, ctx.mouse,
@@ -491,6 +508,14 @@ class MapView(View):
                 ctx.push("fleet_stance", fleet=fl, stance=stance)
                 ctx.clicked = None
             bx += bw + 4
+        self.mothball_btn.draw(
+            surf, pygame.Rect(bx, y, bw, 24), f, ctx.mouse,
+            enabled=(is_mine and fl.can_mothball()),
+            active=fl.mothballed)
+        if is_mine and ctx.clicked and self.mothball_btn.hit(ctx.clicked):
+            ctx.push("fleet_mothball", fleet=fl, value=not fl.mothballed)
+            ctx.notify(f"{fl.name}: {'mothballed' if not fl.mothballed else 'reactivated'}")
+            ctx.clicked = None
 
     # ------------------------------------------------------------------
     def on_key(self, key, ctx):

@@ -17,12 +17,12 @@ TWO CONSTRAINTS, TWO DIFFERENT SCOPES
 -------------------------------------
 The subtle part is that not every commodity balances at the same scale:
 
-*   LABOUR is an Abstract Utility Unit (doc 4): non-storable, and therefore
-    untradeable -- no merchant can haul it, because it evaporates at the end
-    of the tick it was offered in. Labour must therefore balance SECTOR BY
-    SECTOR. A sector whose industry draws more labour than its own citizens
-    supply will bid its local wage to the ceiling, which makes every factory
-    in it unprofitable regardless of how much slack the rest of the galaxy has.
+*   LABOUR TOKENS are storable but bulky (volume 1) -- they trade locally and
+    build small buffers, but merchants cannot haul them effectively. Labour
+    must therefore balance roughly SECTOR BY SECTOR. A sector whose industry
+    draws more labour than its own citizens supply will bid its local wage to
+    the ceiling, which makes every factory in it unprofitable regardless of
+    how much slack the rest of the galaxy has.
 
 *   FOOD is storable and tradeable, but markets are local and a sector that
     imports its entire food supply starves the instant a route is cut. That is
@@ -133,13 +133,8 @@ def census(world):
 
     for b in world.bases:
         used["LABOR"] += b.labor_need()
-        # Bases rearm until they reach their strength target, so budget for
-        # roughly half the maximum purchase rate in the steady state.
-        used["MIL_UNIT"] += max(1, config.MILBASE_MIL_BUY_MAX_PER_TICK // 2)
-
-    # Cargo assets are a stock rather than a flow: only attrition and new
-    # firms create ongoing demand.
-    used["CARGO_UNIT"] += len(world.firms)
+        used["MAINT_GOODS"] += b.maint_goods_need()
+        used["SHIP_TONNAGE"] += max(1, 1 + b.level)
 
     return made, used
 
@@ -187,7 +182,7 @@ def host_sector_for(world, method_key, deficit_key):
             else:
                 score -= INPUT_COLOCATION_BONUS
         existing = station_in(sector, method_key)
-        if existing is not None and existing.level < config.STATION_MAX_LEVEL:
+        if existing is not None and existing.level < config.BALANCE_MAX_LEVEL:
             score += 20_000                      # upgrading beats founding
         if best_score is None or score > best_score:
             best, best_score = sector, score
@@ -215,13 +210,14 @@ def raise_capacity(world, add_station, sector, method_key, output_key,
     if method.extracts and sector.node(method.extracts) is None:
         sector.add_node(method.extracts)
 
+    cap = config.BALANCE_MAX_LEVEL
     changed = False
     guard = 0
     while have_levels < want_levels and guard < 40:
         guard += 1
         plant = None
         for st in sector.stations:
-            if st.method.key == method_key and st.level < config.STATION_MAX_LEVEL:
+            if st.method.key == method_key and st.level < cap:
                 plant = st
                 break
         if plant is not None:
@@ -258,16 +254,17 @@ def add_capacity(world, add_station, deficit_key, deficit) -> bool:
     # had nowhere left to build -- leaving dozens of level-1 factories and a
     # structural shortfall it could no longer close. Raising an existing plant
     # costs no site at all, so capacity goes deep before it goes wide.
+    cap = config.BALANCE_MAX_LEVEL
     existing = [st for st in world.stations
                 if st.method.key == method_key
-                and st.level < config.STATION_MAX_LEVEL
+                and st.level < cap
                 and st.sector.owner != world.pirate_key]
     existing.sort(key=lambda st: -st.sector.market.spot(deficit_key))
     for st in existing:
         if remaining <= 0:
             break
         grew = False
-        while remaining > 0 and st.level < config.STATION_MAX_LEVEL:
+        while remaining > 0 and st.level < cap:
             st._apply_level_up()
             remaining -= 1
             grew = True
@@ -284,7 +281,7 @@ def add_capacity(world, add_station, deficit_key, deficit) -> bool:
             break
         if method.extracts and sector.node(method.extracts) is None:
             sector.add_node(method.extracts)
-        level = min(remaining, config.STATION_MAX_LEVEL)
+        level = min(remaining, cap)
         add_station(world, sector, method_key, sector.owner, level=level)
         remaining -= level
         changed = True

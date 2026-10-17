@@ -34,7 +34,7 @@ CHAIN = [
     "electronics_fab", "hull_works",
     "hydro_farm", "goods_factory",
     "maint_workshop",
-    "cargo_yard", "mil_yard",
+    "shipyard",
     "habitation",
 ]
 
@@ -196,8 +196,7 @@ def build_sandbox(seed=None) -> World:
     _add_station(world, tfi, "hydro_farm", "TERRA", level=3)
     _add_station(world, tf, "goods_factory", "TERRA", level=2)
     _add_station(world, tp, "fuel_refinery", "TERRA", level=1)
-    _add_station(world, tf, "cargo_yard", "TERRA", level=1)
-    _add_station(world, tp, "mil_yard", "TERRA", level=1, loan=True)
+    _add_station(world, tf, "shipyard", "TERRA", level=2)
     _add_station(world, tp, "maint_workshop", "TERRA", level=2)
     _add_station(world, tf, "maint_workshop", "TERRA", level=1)
     _add_station(world, tfi, "maint_workshop", "TERRA", level=1)
@@ -223,12 +222,12 @@ def build_sandbox(seed=None) -> World:
     _add_station(world, vf, "ore_mine", "VEGA", level=3)
     _add_station(world, vf, "smelter", "VEGA", level=3)
     _add_station(world, vf, "hull_works", "VEGA", level=2)
-    _add_station(world, vf, "mil_yard", "VEGA", level=1, loan=True)
+    _add_station(world, vf, "shipyard", "VEGA", level=1, loan=True)
     _add_station(world, vs, "ice_harvester", "VEGA", level=3)
     _add_station(world, vs, "hydro_farm", "VEGA", level=3)
     _add_station(world, vs, "goods_factory", "VEGA", level=2)
     _add_station(world, vp, "electronics_fab", "VEGA", level=2)
-    _add_station(world, vf, "cargo_yard", "VEGA", level=1)
+    _add_station(world, vf, "shipyard", "VEGA", level=1)
     _add_station(world, vp, "maint_workshop", "VEGA", level=2)
     _add_station(world, vf, "maint_workshop", "VEGA", level=1)
     _add_station(world, vs, "maint_workshop", "VEGA", level=1)
@@ -359,7 +358,7 @@ def build_galaxy(seed=None) -> World:
         processors = ["smelter", "fuel_refinery", "chem_plant", "hydro_farm",
                       "goods_factory"]
         advanced = ["electronics_fab", "hull_works"]
-        yards = ["cargo_yard", "mil_yard"]
+        yards = ["shipyard"]
 
         count = 4 if is_capital else rng.randint(0, 2)
         for _ in range(count):

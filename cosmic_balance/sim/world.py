@@ -747,10 +747,15 @@ class World:
             self.found_station(a["sector"], a["method"], a["faction"],
                                financed=a.get("financed", True))
 
+        elif k == "downsize_station":
+            a["station"].downsize(self)
+
         elif k == "fleet_move":
             a["fleet"].order_move(self, a["sector"])
         elif k == "fleet_stance":
             a["fleet"].stance = a["stance"]
+        elif k == "fleet_mothball":
+            a["fleet"].set_mothball(a["value"])
 
         elif k == "declare_war":
             diplomacy.declare_war(self, a["a"], a["b"])

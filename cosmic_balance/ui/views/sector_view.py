@@ -48,6 +48,7 @@ class SectorView(View):
                                       bp_str)
         self.upgrade_btn = W.Button("Expand station")
         self.cancel_btn = W.Button("Cancel build")
+        self.downsize_btn = W.Button("Downsize")
         self.found_buttons = []
         self.dragging = None
 
@@ -229,6 +230,17 @@ class SectorView(View):
         if not sector.pops:
             W.text(surf, "uninhabited", (inner.x, y), f.ui_s, T.TEXT_FAINT)
             return
+        hab_cap = sum(max(1, st.level) * config.HABITATION_POP_PER_LEVEL
+                      for st in sector.stations
+                      if st.method.key == config.HABITATION_METHOD_KEY)
+        if hab_cap > 0:
+            W.text(surf, f"capacity {hab_cap:,}", (inner.x, y), f.tiny,
+                   T.TEXT_FAINT)
+            W.bar(surf, pygame.Rect(inner.x + 90, y + 2, 100, 7),
+                  min(1.0, sector.population / hab_cap) if hab_cap else 0,
+                  T.WARN if sector.population > hab_cap * 0.9 else T.GOOD)
+            y += 16
+
         for p in sector.pops:
             status = p.status()
             color = {"growing": T.GOOD, "starving": T.BAD}.get(status,
@@ -363,6 +375,13 @@ class SectorView(View):
                 ctx.push("lend_capital", faction=ctx.world.player_key,
                          station=st, amount=config.LOAN_PRINCIPAL_PER_LEVEL)
                 ctx.notify(f"{st.name}: construction warehouse deployed")
+            if st.level > 1:
+                self.downsize_btn.draw(
+                    surf, pygame.Rect(inner.x + 158, by, 100, 26), f,
+                    ctx.mouse, enabled=can)
+                if can and ctx.clicked and self.downsize_btn.hit(ctx.clicked):
+                    ctx.push("downsize_station", station=st)
+                    ctx.notify(f"{st.name}: downsized to L{st.level - 1}")
         else:
             self.cancel_btn.draw(surf, pygame.Rect(inner.x, by, 150, 26), f,
                                  ctx.mouse, enabled=can)

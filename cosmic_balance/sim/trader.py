@@ -98,12 +98,12 @@ class MerchantFirm:
     # ------------------------------------------------------------------
     @property
     def cargo_units(self) -> int:
-        return self.hold.get("CARGO_UNIT")
+        return self.hold.get("SHIP_TONNAGE")
 
     def capacity(self) -> int:
-        """Total trade capacity dictated by the commercial cargo inventory."""
+        """Total trade capacity dictated by ship tonnage inventory."""
         return (config.STATION_BASE_TRADE_VOLUME +
-                self.cargo_units * config.CARGO_VOLUME_PER_UNIT)
+                self.cargo_units * config.TONNAGE_VOLUME_PER_UNIT)
 
     def committed_volume(self) -> int:
         return sum(r.volume() * max(1, COMMODITIES[r.key].volume)
@@ -153,7 +153,7 @@ class MerchantFirm:
         # breadth-first search is needed to price a candidate.
         candidates = []
         for key in COMMODITIES.storable_keys:
-            if key == "CARGO_UNIT":
+            if key == "SHIP_TONNAGE":
                 continue
             sources = [(s.market.spot(key), s) for s, _ in pool
                        if s.market.last_supply[key] > 0 and s.market.spot(key) > 0]
@@ -237,12 +237,12 @@ class MerchantFirm:
     # ------------------------------------------------------------------
     def submit_orders(self, world):
         self._orders = []
-        # Top up commercial cargo capacity at the home market.
+        # Top up ship tonnage at the home market.
         want = config.TRADER_CARGO_TARGET - self.cargo_units
         if want > 0:
             acc = self.wallet.account(self.home.market.currency)
             o = self.home.market.submit_buy(
-                "CARGO_UNIT", min(want, config.TRADER_CARGO_BUY_MAX_PER_TICK),
+                "SHIP_TONNAGE", min(want, config.TRADER_CARGO_BUY_MAX_PER_TICK),
                 acc, self.hold, self, tag=f"{self.name} cargo")
             if o:
                 self._orders.append(("cargo", None, o))
@@ -419,7 +419,7 @@ class MerchantFirm:
             qty = route.volume() // max(1, COMMODITIES[route.key].volume)
             need += qty * route.src.market.spot(route.key)
         need += config.TRADER_CARGO_TARGET * \
-            self.home.market.spot("CARGO_UNIT") // 4
+            self.home.market.spot("SHIP_TONNAGE") // 4
         return max(need, 1) * config.TRADER_WORKING_CAPITAL_TICKS
 
     def pay_dividends(self, world) -> int:
@@ -473,7 +473,7 @@ class MerchantFirm:
             out[cur] = out.get(cur, 0) + qty * route.src.market.spot(route.key)
         home = self.home.market.currency
         out[home] = out.get(home, 0) + \
-            config.TRADER_CARGO_TARGET * self.home.market.spot("CARGO_UNIT") // 4
+            config.TRADER_CARGO_TARGET * self.home.market.spot("SHIP_TONNAGE") // 4
         return {k: max(1, v) * config.TRADER_WORKING_CAPITAL_TICKS
                 for k, v in out.items()}
 

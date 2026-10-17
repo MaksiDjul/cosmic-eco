@@ -198,8 +198,7 @@ class App:
         elif k == pygame.K_F11:
             pygame.display.toggle_fullscreen()
         elif k == pygame.K_SPACE:
-            self.speed_index = 0 if self.speed_index else \
-                config.DEFAULT_SPEED_INDEX
+            self.speed_index = 0 if self.speed_index else 2
         elif pygame.K_1 <= k <= pygame.K_6:
             self.speed_index = min(k - pygame.K_1, len(config.SPEED_STEPS) - 1)
         elif k == pygame.K_PERIOD:

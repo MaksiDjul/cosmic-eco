@@ -21,6 +21,7 @@ from .fixed import apply_bp, clamp
 from .ledger import Inventory, Wallet
 
 PATROL, DEFEND, ATTACK = "patrol", "defend", "attack"
+MOTHBALLED = "mothballed"
 
 
 class Fleet:
@@ -36,6 +37,7 @@ class Fleet:
         self.base = base
         self.name = name or f"Fleet-{self.id}"
         self.stance = stance
+        self.mothballed = False
 
         # Strategic deployment state
         self.path = []                 # remaining sectors to traverse
@@ -61,19 +63,32 @@ class Fleet:
         return self.base.crew_bp
 
     def effective_strength(self) -> int:
-        """Combat strength after crew shortfalls (doc 5.1)."""
         if self.strength <= 0:
             return 0
         bp = self.crew_bp()
         if bp < config.FLEET_UNCREWED_EFFICIENCY_BP:
             bp = config.FLEET_UNCREWED_EFFICIENCY_BP
-        return max(0, apply_bp(self.strength, bp))
+        result = max(0, apply_bp(self.strength, bp))
+        if self.mothballed:
+            result = apply_bp(result, config.MOTHBALL_COMBAT_BP)
+        return result
 
     def asset_value(self, world) -> int:
-        """Replacement value of the hulls, at local military tonnage prices."""
-        units = self.strength // max(1, config.FLEET_STRENGTH_PER_MIL_UNIT)
-        price = self.sector.market.spot("MIL_UNIT")
+        units = self.strength // max(1, config.FLEET_STRENGTH_PER_TONNAGE)
+        price = self.sector.market.spot("SHIP_TONNAGE")
         return units * price
+
+    def can_mothball(self) -> bool:
+        return (self.base is not None and
+                self.base.sector is self.sector and
+                self.is_present() and
+                not self.mothballed)
+
+    def set_mothball(self, state: bool):
+        self.mothballed = state
+        if state:
+            self.path = []
+            self.destination = None
 
     # ------------------------------------------------------------------
     def order_move(self, world, target_sector):
@@ -131,20 +146,23 @@ class Fleet:
 
 
 class MilitaryBase:
-    """A physical Logistical Base Station (doc 5.1).
+    """A fleet base station with goods storage, crewing and ship commissioning.
 
-    It purchases Military Tonnage to commission into fleet strength and buys
-    Labour Units every tick to keep the crews aboard.
+    One fleet per base. Fleet spawns at strength 0 and is built up by
+    purchasing SHIP_TONNAGE. Level sets fleet capacity. Like habitats, money
+    comes from the owning faction — no dividends.
     """
 
     _seq = 0
 
-    def __init__(self, sector, owner, ledger, currency_code, name=None, cash=0):
+    def __init__(self, sector, owner, ledger, currency_code, level=1,
+                 name=None, cash=0):
         MilitaryBase._seq += 1
         self.id = MilitaryBase._seq
         self.sector = sector
         self.owner = owner
         self.ledger = ledger
+        self.level = level
         self.name = name or f"Base-{self.id}"
 
         self.wallet = Wallet(ledger, f"base:{self.id}", currency_code)
@@ -155,40 +173,100 @@ class MilitaryBase:
         self.store = Inventory(ledger, f"base_store:{self.id}",
                                default_capacity=400)
         self.fleets = []
+        self._resize_storage()
         self.crew_bp = config.BP
         self.labor_shortfall = 0
         self.spend_last = 0
+        self.maint_missed = 0
         self._orders = []
+
+    def _resize_storage(self):
+        lvl = max(1, self.level)
+        cap = self.fleet_capacity()
+        labor_need = cap * config.FLEET_CREW_LABOR_PER_STRENGTH
+        self.store.capacity["LABOR"] = max(40,
+            labor_need * config.MILBASE_LABOR_BUFFER_TICKS)
+        mg_need = self.maint_goods_need()
+        self.store.capacity["MAINT_GOODS"] = max(40,
+            mg_need * config.MILBASE_LABOR_BUFFER_TICKS)
+        self.store.capacity["SHIP_TONNAGE"] = max(40, (1 + lvl) * 5)
+
+    def fleet_capacity(self) -> int:
+        return max(1, self.level) * config.MILBASE_FLEET_CAP_PER_LEVEL
+
+    def maint_goods_need(self) -> int:
+        strength = self.linked_strength()
+        return max(0, (strength * config.MILBASE_MAINT_GOODS_PER_STRENGTH) // 100)
 
     # ------------------------------------------------------------------
     def linked_strength(self) -> int:
         return sum(f.strength for f in self.fleets)
 
     def labor_need(self) -> int:
-        return self.linked_strength() * config.FLEET_CREW_LABOR_PER_STRENGTH
+        total = self.linked_strength() * config.FLEET_CREW_LABOR_PER_STRENGTH
+        for f in self.fleets:
+            if f.mothballed:
+                saved = f.strength * config.FLEET_CREW_LABOR_PER_STRENGTH
+                total -= saved - apply_bp(saved, config.MOTHBALL_COST_BP)
+        return max(0, total)
+
+    def downsize(self, world):
+        if self.level <= 1:
+            return
+        self.level -= 1
+        self._resize_storage()
+        for key in list(self.store.stock.keys()):
+            excess = self.store.get(key) - self.store.capacity.get(key, 0)
+            if excess > 0:
+                self.ledger.consume(self.store, key, excess, "base_downsize")
+        cap = self.fleet_capacity()
+        for f in self.fleets:
+            if f.strength > cap:
+                over = f.strength - cap
+                f.strength = cap
+                f.losses_total += over
+        world.log(f"{self.name} downsized to level {self.level}")
 
     # ------------------------------------------------------------------
     def submit_orders(self, world):
         self._orders = []
+        self._resize_storage()
         market = self.sector.market
         acc = self.wallet.account(market.currency)
+        lvl = max(1, self.level)
 
-        # Crew labour, bought fresh every tick from the local pool.
+        # Crew labour tokens
         need = self.labor_need()
         if need > 0:
-            self.store.capacity["LABOR"] = need * config.MILBASE_LABOR_BUFFER_TICKS
-            short = need - self.store.get("LABOR")
-            if short > 0:
-                o = market.submit_buy("LABOR", short, acc, self.store, self,
+            target = need * config.MILBASE_LABOR_BUFFER_TICKS
+            short = max(0, target - self.store.get("LABOR"))
+            order = need + short // config.RESTOCK_SPREAD_TICKS
+            order = min(order, short) if short > 0 else 0
+            if order > 0:
+                o = market.submit_buy("LABOR", order, acc, self.store, self,
                                       tag=f"{self.name} crew")
                 if o:
                     self._orders.append(o)
 
-        # Military tonnage to commission into hulls.
+        # Maintenance goods
+        mg_need = self.maint_goods_need()
+        if mg_need > 0:
+            mg_target = mg_need * config.MILBASE_LABOR_BUFFER_TICKS
+            mg_short = max(0, mg_target - self.store.get("MAINT_GOODS"))
+            mg_order = mg_need + mg_short // config.RESTOCK_SPREAD_TICKS
+            mg_order = min(mg_order, mg_short) if mg_short > 0 else 0
+            if mg_order > 0:
+                o = market.submit_buy("MAINT_GOODS", mg_order, acc,
+                                      self.store, self,
+                                      tag=f"{self.name} maint")
+                if o:
+                    self._orders.append(o)
+
+        # Ship tonnage to commission into fleet strength
+        tonnage_per_tick = 1 + lvl
         if world.wants_military(self.owner):
-            qty = config.MILBASE_MIL_BUY_MAX_PER_TICK
-            self.store.capacity["MIL_UNIT"] = 200
-            o = market.submit_buy("MIL_UNIT", qty, acc, self.store, self,
+            o = market.submit_buy("SHIP_TONNAGE", tonnage_per_tick, acc,
+                                  self.store, self,
                                   tag=f"{self.name} rearm")
             if o:
                 self._orders.append(o)
@@ -210,14 +288,25 @@ class MilitaryBase:
             self.crew_bp = config.BP
             self.labor_shortfall = 0
 
-        # --- commission military tonnage into fleet strength ----------
-        units = self.store.get("MIL_UNIT")
+        # --- consume maintenance goods --------------------------------
+        mg_need = self.maint_goods_need()
+        if mg_need > 0:
+            mg_got = self.ledger.consume(self.store, "MAINT_GOODS", mg_need,
+                                         "base_maint")
+            if mg_got < mg_need:
+                self.maint_missed += mg_need - mg_got
+            if self.maint_missed >= config.MAINT_MISSED_DOWNGRADE:
+                self.maint_missed -= config.MAINT_MISSED_DOWNGRADE
+                self.downsize(world)
+
+        # --- commission ship tonnage into fleet strength ----------
+        units = self.store.get("SHIP_TONNAGE")
+        cap = self.fleet_capacity()
         if units > 0 and self.fleets:
-            self.ledger.consume(self.store, "MIL_UNIT", units, "commission")
-            gained = units * config.FLEET_STRENGTH_PER_MIL_UNIT
-            # Reinforce the weakest home fleet first.
+            self.ledger.consume(self.store, "SHIP_TONNAGE", units, "commission")
+            gained = units * config.FLEET_STRENGTH_PER_TONNAGE
             target = min(self.fleets, key=lambda f: f.strength)
-            target.strength += gained
+            target.strength = min(cap, target.strength + gained)
 
     # ------------------------------------------------------------------
     def on_sovereignty_change(self, old_owner, new_owner, new_currency, world):

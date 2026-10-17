@@ -2,17 +2,13 @@
 DEMOGRAPHICS & LABOUR (doc 3.5).
 
 *   The Labor Pool -- sectors hold population density which provides Labour
-    Units.
+    Tokens.
 *   Population Entities -- pops are economic consumers with their own cash
-    account and consumption warehouse. They generate Labour Units proportional
+    account and consumption warehouse. They generate Labour Tokens proportional
     to their size and sell them directly onto the local market WITHOUT
-    requiring material inputs (Labour is the Abstract Utility Unit of doc 4).
+    requiring material inputs.
 *   The Consumer Loop -- with their earned wages they pay local sector taxes
     and spend the remainder on consumer goods to sustain and grow.
-
-Labour is explicitly non-storable: whatever is not bought in the tick it was
-offered evaporates, which is recorded as a tracked burn so conservation still
-balances exactly.
 """
 
 from . import config
@@ -61,15 +57,18 @@ class Pop:
             need = self.need_for(key)
             self.store.capacity[key] = max(config.STORAGE_MIN_CAPACITY,
                                            need * ticks)
-        # Labour is produced here before being sold; it never persists.
-        self.store.capacity["LABOR"] = max(1, self.labor_output() * 2)
+        lab_cap = max(config.STORAGE_MIN_CAPACITY, self.labor_output() * 5)
+        self.store.capacity["LABOR"] = lab_cap
+        excess = self.store.get("LABOR") - lab_cap
+        if excess > 0:
+            self.ledger.consume(self.store, "LABOR", excess, "labor_trim")
 
     def need_for(self, key) -> int:
         per_1000 = config.SUSTENANCE_NEEDS.get(key, 0)
         return (self.size * per_1000) // 1000
 
     def labor_output(self) -> int:
-        """Labour Units generated this tick, proportional to size."""
+        """Labour Tokens generated this tick, proportional to size."""
         return (self.size * config.POP_LABOR_PER_1000) // 1000
 
     @property
@@ -87,7 +86,7 @@ class Pop:
         out = self.labor_output()
         self.last_labor_offered = out
         if out > 0:
-            self.ledger.produce_uncapped(self.store, "LABOR", out, "labor")
+            self.ledger.produce(self.store, "LABOR", out, "labor")
         have_labor = self.store.get("LABOR")
         self._labor_order = None
         if have_labor > 0:
@@ -124,16 +123,28 @@ class Pop:
                 self._buy_orders.append(o)
                 spendable -= o.qty * price
 
+        # --- dynamic cash reserve ----------------------------------------
+        # Hold back enough to cover upcoming food + habitation maintenance
+        # so that luxury demand does not drain the pop's operating cash.
+        food_price = market.spot("FOOD")
+        food_reserve = food_price * self.need_for("FOOD") * config.POP_RESERVE_FOOD_TICKS
+        hab_maint_per_tick = 0
+        for st in self.sector.stations:
+            if st.method.key == config.HABITATION_METHOD_KEY:
+                hab_maint_per_tick += config.MAINT_GOODS_PER_LEVEL * max(1, st.level)
+        maint_price = market.spot("MAINT_GOODS")
+        maint_reserve = maint_price * hab_maint_per_tick * config.POP_RESERVE_MAINT_TICKS
+        reserve = food_reserve + maint_reserve
+        luxury_spendable = max(0, spendable - reserve)
+
         # --- elastic luxury demand (see config.POP_LUXURY_*) -------------
-        # Surplus income is spent on extra consumer goods rather than banked
-        # forever, which is what returns wages to the firms that paid them.
         self._luxury_order = None
-        if spendable > 0:
+        if luxury_spendable > 0:
             key = config.POP_LUXURY_KEY
             price = market.spot(key)
             base = self.need_for(key)
             if price > 0 and base > 0:
-                budget = apply_bp(spendable, config.POP_LUXURY_SPEND_BP)
+                budget = apply_bp(luxury_spendable, config.POP_LUXURY_SPEND_BP)
                 qty = min(budget // price, base * config.POP_LUXURY_MAX_MULT)
                 qty = min(qty, self.store.space(key))
                 if qty > 0:
@@ -153,9 +164,6 @@ class Pop:
         self.last_labor_sold = self._labor_order.filled if self._labor_order else 0
         self.last_income = income
         self.last_spend = sum(o.value for o in self._buy_orders)
-
-        # Unsold labour evaporates; the world sweeps every inventory for
-        # non-storable units at the end of the tick (World._expire_nonstorable).
 
         # --- local sector taxes (doc 3.5) -------------------------------
         self.last_tax = 0
