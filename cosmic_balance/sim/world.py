@@ -241,7 +241,13 @@ class World:
         for pb in self.pirate_bases:
             pb.post_market(self)
 
-        # 8a -- corporate distributions and state budgets.
+        # 8a -- station auto-downgrade check
+        if self.tick % config.STATION_DOWNGRADE_INTERVAL == 0:
+            for st in list(self.stations):
+                if st.should_auto_downgrade():
+                    st._downgrade(self)
+
+        # 8b -- corporate distributions and state budgets.
         # Both are required for the closed currency system to keep circulating:
         # see Station.pay_dividends and Faction.run_fiscal_policy.
         for st in self.stations:
@@ -252,7 +258,7 @@ class World:
             if not self.is_pirate(key):
                 fac.run_fiscal_policy(self)
 
-        # 8b -- Abstract Utility Units expire (doc 4)
+        # 8c -- Abstract Utility Units expire (doc 4)
         self._expire_nonstorable()
 
         # 9 -- military layer
@@ -612,7 +618,9 @@ class World:
         from .commodities import PRODUCTION_METHODS
 
         for key, fac in self.factions.items():
-            if self.is_pirate(key) or fac.treasury < config.AI_EXPAND_MIN_TREASURY:
+            if self.is_pirate(key) or fac.is_player:
+                continue
+            if fac.treasury < config.AI_EXPAND_MIN_TREASURY:
                 continue
             in_progress = [st for st in self.stations
                            if st.controller == key

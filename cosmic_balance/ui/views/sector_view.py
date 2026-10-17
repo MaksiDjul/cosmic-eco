@@ -374,6 +374,33 @@ class SectorView(View):
                    (inner.x + 162, by + 5), f.tiny, T.TEXT_FAINT)
 
     # ------------------------------------------------------------------
+    def _draw_confirm_dialog(self, surf, inner, ctx, sector, method_key, method):
+        """Modal confirmation before commissioning a station."""
+        f = ctx.fonts
+        dw, dh = 340, 100
+        dx = inner.centerx - dw // 2
+        dy = inner.centery - dh // 2
+        dr = pygame.Rect(dx, dy, dw, dh)
+        pygame.draw.rect(surf, (30, 34, 42), dr)
+        pygame.draw.rect(surf, T.ACCENT, dr, 2)
+        W.text(surf, f"Build {method.name}?",
+               (dx + 12, dy + 10), f.ui_s, T.TEXT)
+        W.text(surf, f"Sector: {sector.name}  |  Financed by treasury loan",
+               (dx + 12, dy + 32), f.tiny, T.TEXT_DIM)
+        yes = W.Button("Confirm")
+        no = W.Button("Cancel")
+        yes.draw(surf, pygame.Rect(dx + 60, dy + 60, 80, 26), f, ctx.mouse)
+        no.draw(surf, pygame.Rect(dx + 200, dy + 60, 80, 26), f, ctx.mouse)
+        if ctx.clicked:
+            if yes.hit(ctx.clicked):
+                ctx.push("found_station", sector=sector, method=method_key,
+                         faction=ctx.world.player_key, financed=True)
+                ctx.notify(f"{method.name} commissioned in {sector.name}")
+                ctx.pending_found = None
+            elif no.hit(ctx.clicked) or not dr.collidepoint(ctx.clicked):
+                ctx.pending_found = None
+
+    # ------------------------------------------------------------------
     def draw_found_options(self, surf, inner, ctx, y):
         """Let the player commission new industry in their own space."""
         f = ctx.fonts
@@ -401,9 +428,7 @@ class SectorView(View):
             b.draw(surf, pygame.Rect(x, y, w, 24), f, ctx.mouse)
             self.found_buttons.append((b, key, method))
             if ctx.clicked and b.hit(ctx.clicked):
-                ctx.push("found_station", sector=sector, method=key,
-                         faction=ctx.world.player_key, financed=True)
-                ctx.notify(f"{method.name} commissioned in {sector.name}")
+                ctx.pending_found = (sector, key, method)
             x += w + 4
 
         hovered = next((m for b, _, m in self.found_buttons
@@ -413,3 +438,11 @@ class SectorView(View):
                          f"{', '.join(hovered.inputs) or 'nothing'} -> "
                          f"{', '.join(hovered.outputs)}",
                    (inner.x, inner.bottom - 16), f.tiny, T.ACCENT)
+
+        # --- confirmation dialog -----------------------------------------
+        if ctx.pending_found is not None:
+            ps, pk, pm = ctx.pending_found
+            if ps is not sector:
+                ctx.pending_found = None
+            else:
+                self._draw_confirm_dialog(surf, inner, ctx, ps, pk, pm)

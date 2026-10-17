@@ -192,23 +192,38 @@ class Pop:
             if weighted_need else config.BP
         self.food_fill_bp = self.need_fill_bp.get("FOOD", config.BP)
 
-        # --- growth / decline -------------------------------------------
-        # Growth also responds to the LABOUR market, which is what closes the
-        # demographic loop: a sector whose industry is short of workers offers
-        # better wages and draws migrants, and that extra workforce is exactly
-        # what the stalled plants needed. Without this feedback, any expansion
-        # of industry permanently outruns the population that has to staff it.
+        # --- growth / decline (tiered starvation) -----------------------
         tight_labor = sector.market.last_demand["LABOR"] > \
             sector.market.last_supply["LABOR"]
-        if self.satisfaction_bp >= config.POP_GROWTH_SATISFACTION_BP:
+
+        starving = False
+        for threshold_bp, mult in config.STARVATION_TIERS:
+            if self.food_fill_bp < threshold_bp:
+                self.size = max(config.POP_MIN_SIZE,
+                                (self.size * mult) // config.BP)
+                starving = True
+                break
+
+        if not starving and self.satisfaction_bp >= config.POP_GROWTH_SATISFACTION_BP:
             rate = config.POP_GROWTH_BP
             if tight_labor:
                 rate += config.POP_MIGRATION_BP
             growth = apply_bp(self.size, rate)
-            self.size = min(config.POP_MAX_SIZE, self.size + max(1, growth))
-        elif self.food_fill_bp < config.POP_DECLINE_SATISFACTION_BP:
-            loss = apply_bp(self.size, config.POP_DECLINE_BP)
-            self.size = max(config.POP_MIN_SIZE, self.size - max(1, loss))
+            cap = config.POP_MAX_SIZE
+            hab_cap = self._habitation_cap()
+            if hab_cap is not None:
+                cap = min(cap, hab_cap)
+            self.size = min(cap, self.size + max(1, growth))
+
+    def _habitation_cap(self):
+        """Population cap imposed by habitation stations in this sector."""
+        total = 0
+        found = False
+        for st in self.sector.stations:
+            if st.method.key == config.HABITATION_METHOD_KEY:
+                total += st.level * config.HABITATION_POP_PER_LEVEL
+                found = True
+        return total if found else None
 
     # ------------------------------------------------------------------
     # Sector Currency Transition hook (doc 3.2)

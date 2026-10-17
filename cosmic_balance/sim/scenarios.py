@@ -33,7 +33,9 @@ CHAIN = [
     "smelter", "fuel_refinery", "chem_plant",
     "electronics_fab", "hull_works",
     "hydro_farm", "goods_factory",
+    "maint_workshop",
     "cargo_yard", "mil_yard",
+    "habitation",
 ]
 
 GREEK = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta",
@@ -196,6 +198,12 @@ def build_sandbox(seed=None) -> World:
     _add_station(world, tp, "fuel_refinery", "TERRA", level=1)
     _add_station(world, tf, "cargo_yard", "TERRA", level=1)
     _add_station(world, tp, "mil_yard", "TERRA", level=1, loan=True)
+    _add_station(world, tp, "maint_workshop", "TERRA", level=2)
+    _add_station(world, tf, "maint_workshop", "TERRA", level=1)
+    _add_station(world, tfi, "maint_workshop", "TERRA", level=1)
+    _add_station(world, tp, "habitation", "TERRA", level=10)
+    _add_station(world, tf, "habitation", "TERRA", level=8)
+    _add_station(world, tfi, "habitation", "TERRA", level=7)
 
     # --- Vegan industry: deliberately lopsided so trade must happen -----
     vp, vf, vs = (sectors["Vega Prime"], sectors["Vega Foundry"],
@@ -221,6 +229,12 @@ def build_sandbox(seed=None) -> World:
     _add_station(world, vs, "goods_factory", "VEGA", level=2)
     _add_station(world, vp, "electronics_fab", "VEGA", level=2)
     _add_station(world, vf, "cargo_yard", "VEGA", level=1)
+    _add_station(world, vp, "maint_workshop", "VEGA", level=2)
+    _add_station(world, vf, "maint_workshop", "VEGA", level=1)
+    _add_station(world, vs, "maint_workshop", "VEGA", level=1)
+    _add_station(world, vp, "habitation", "VEGA", level=9)
+    _add_station(world, vf, "habitation", "VEGA", level=8)
+    _add_station(world, vs, "habitation", "VEGA", level=6)
 
     # --- the neutral hub: pops, a market, and the smugglers -------------
     _add_nodes(world, hub, ["ORE", "ICE"])
@@ -228,6 +242,8 @@ def build_sandbox(seed=None) -> World:
     _add_station(world, hub, "hydro_farm", "FREE", level=2)
     _add_station(world, hub, "ice_harvester", "FREE", level=1)
     _add_station(world, hub, "ore_mine", "FREE", level=1)
+    _add_station(world, hub, "maint_workshop", "FREE", level=1)
+    _add_station(world, hub, "habitation", "FREE", level=5)
 
     # --- merchants ------------------------------------------------------
     _add_firm(world, hub, "FREE")
@@ -358,6 +374,18 @@ def build_galaxy(seed=None) -> World:
         elif rng.randint(1, 100) <= 22:
             _add_station(world, sector, rng.choice(advanced), sector.owner,
                          level=1, loan=True)
+
+        # Every populated sector gets a habitation station and a maintenance
+        # workshop so the economy can sustain itself from day one.
+        if sector.pops:
+            pop_total = sum(p.size for p in sector.pops)
+            hab_lvl = max(1, -(-pop_total // config.HABITATION_POP_PER_LEVEL))
+            _add_station(world, sector, "habitation", sector.owner,
+                         level=hab_lvl)
+            total_levels = sum(max(1, st.level) for st in sector.stations)
+            mw_lvl = max(1, -(-total_levels * config.MAINT_GOODS_PER_LEVEL // 6))
+            _add_station(world, sector, "maint_workshop", sector.owner,
+                         level=mw_lvl)
 
         # A merchant presence almost everywhere. Markets are per-sector, so
         # the trade network IS the galaxy's circulatory system -- too few firms

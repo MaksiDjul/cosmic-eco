@@ -163,6 +163,8 @@ class Station:
         self.condition = config.CONDITION_MAX
         # Fractional maintenance draw carried between ticks, in basis points.
         self.maint_accrual = defaultdict(int)
+        # Maintenance goods: accumulated missed deliveries trigger downgrade.
+        self.maint_missed = 0
 
         # Throughput tuning state
         self.clock = NORMAL
@@ -187,6 +189,9 @@ class Station:
         self.interest_last = 0
         self.dividends_total = 0
         self.dividend_last = 0
+
+        # Auto-downgrade tracking
+        self.idle_ticks = 0
 
         # Construction
         self.construction = None
@@ -278,6 +283,12 @@ class Station:
                        self.maintenance_per_tick(key) *
                        config.MAINTENANCE_BUFFER_TICKS * 2)
             self.store.capacity[key] = max(cur, need)
+        # Maintenance goods storage
+        mg_need = config.MAINT_GOODS_PER_LEVEL * max(1, self.level)
+        self.store.capacity["MAINT_GOODS"] = max(
+            self.store.capacity.get("MAINT_GOODS", 0),
+            config.STORAGE_MIN_CAPACITY,
+            mg_need * config.MAINT_BUFFER_TICKS * 2)
         # Cargo assets and construction goods need somewhere to live too.
         self.store.capacity["CARGO_UNIT"] = max(
             self.store.capacity.get("CARGO_UNIT", 0),
@@ -324,6 +335,11 @@ class Station:
                                 self.maintenance_per_tick(key) *
                                 config.MAINTENANCE_BUFFER_TICKS,
                                 "scenario_seed")
+        # Seed maintenance goods
+        mg_need = config.MAINT_GOODS_PER_LEVEL * max(1, self.level)
+        self.ledger.produce(self.store, "MAINT_GOODS",
+                            mg_need * config.MAINT_BUFFER_TICKS,
+                            "scenario_seed")
         self.ledger.produce(self.store, "CARGO_UNIT",
                             config.STATION_CARGO_PER_LEVEL * lvl,
                             "scenario_seed")
@@ -440,6 +456,22 @@ class Station:
             if o:
                 self._buy_orders.append(o)
                 budget_volume -= vol(key, o.qty)
+
+        # --- 2b. buy MAINT_GOODS (station-level maintenance) -------------
+        mg_per_tick = config.MAINT_GOODS_PER_LEVEL * max(1, self.level)
+        mg_target = max(1, mg_per_tick * config.MAINT_BUFFER_TICKS)
+        mg_short = _restock_order(mg_per_tick, mg_target,
+                                  self.store.get("MAINT_GOODS"))
+        if mg_short > 0:
+            qty = cap_by_volume("MAINT_GOODS",
+                                min(mg_short, self.store.space("MAINT_GOODS")),
+                                budget_volume)
+            if qty > 0:
+                o = market.submit_buy("MAINT_GOODS", qty, acc, self.store,
+                                      self, tag=f"{self.name} maint")
+                if o:
+                    self._buy_orders.append(o)
+                    budget_volume -= vol("MAINT_GOODS", o.qty)
 
         # --- 3. buy production inputs with a safety buffer --------------
         # Demand is price-elastic: a plant whose recipe is underwater at
@@ -578,6 +610,17 @@ class Station:
         else:
             self.condition = max(0, self.condition - config.CONDITION_DECAY_ON_MISSING)
 
+        # --- MAINT_GOODS consumption (counter-based downgrade) -----------
+        mg_need = config.MAINT_GOODS_PER_LEVEL * max(1, self.level)
+        mg_got = self.ledger.consume(self.store, "MAINT_GOODS", mg_need,
+                                     "maint_goods")
+        mg_deficit = mg_need - mg_got
+        if mg_deficit > 0:
+            self.maint_missed += mg_deficit
+        if self.maint_missed >= config.MAINT_MISSED_DOWNGRADE:
+            self.maint_missed -= config.MAINT_MISSED_DOWNGRADE
+            self._downgrade(world)
+
         # --- cash flow (for the finance screens) ------------------------
         self.revenue_last = revenue
         self.costs_last = costs
@@ -614,6 +657,10 @@ class Station:
 
         # --- production, and this tick's true profitability -------------
         out_value, in_value = self.produce(world)
+        if self.ran_last_tick:
+            self.idle_ticks = 0
+        else:
+            self.idle_ticks += 1
         self.margin_last = out_value - in_value - upkeep
         self.profit_last = self.margin_last
         self.profit_total += self.margin_last
@@ -894,6 +941,51 @@ class Station:
     def submit_fx(self, fx):
         from .currency import convert_legacy_cash
         convert_legacy_cash(self.wallet, fx, self)
+
+    # ------------------------------------------------------------------
+    # downgrade / destruction
+    # ------------------------------------------------------------------
+    def _downgrade(self, world):
+        """Shed one level; destroy the station if already at level 1."""
+        if self.level <= 1:
+            self._destroy(world)
+            return
+        self.level -= 1
+        self._resize_storage()
+        for key in list(self.store.stock.keys()):
+            excess = self.store.get(key) - self.store.capacity.get(key, 0)
+            if excess > 0:
+                self.ledger.consume(self.store, key, excess, "downgrade_shed")
+        world.log(f"{self.name} downgraded to level {self.level}")
+
+    def _destroy(self, world):
+        """Permanently remove this station, conserving all value."""
+        owner = world.factions.get(self.sector.owner)
+        if owner:
+            for cur, acc in list(self.wallet.accounts.items()):
+                if acc.balance > 0:
+                    self.ledger.transfer(acc, owner.wallet.account(cur),
+                                         acc.balance, "station_destroyed")
+        for key in list(self.store.stock.keys()):
+            qty = self.store.get(key)
+            if qty > 0:
+                self.ledger.consume(self.store, key, qty, "station_destroyed")
+        if self in self.sector.stations:
+            self.sector.stations.remove(self)
+        if self in world.stations:
+            world.stations.remove(self)
+        world.log(f"{self.name} destroyed in {self.sector.name}")
+
+    def should_auto_downgrade(self) -> bool:
+        """Check if this station should shed a level due to poor performance."""
+        if self.level <= 0 or self.construction is not None:
+            return False
+        threshold = config.STATION_DOWNGRADE_BAD_TICKS
+        if self.bad_ticks >= threshold and self.clock == UNDERCLOCK:
+            return True
+        if self.idle_ticks >= threshold and self.level > 0:
+            return True
+        return False
 
     # ------------------------------------------------------------------
     def status_text(self) -> str:

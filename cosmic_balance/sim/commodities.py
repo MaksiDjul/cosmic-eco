@@ -131,6 +131,16 @@ PRODUCTION_METHODS = {
                          inputs={"POLYMER": 6, "METAL": 2, "LABOR": 9},
                          outputs={"GOODS": 9}, short="GDS"),
 
+        # --- Maintenance ---
+        ProductionMethod("maint_workshop", "Maintenance Workshop",
+                         inputs={"METAL": 3, "POLYMER": 2, "LABOR": 8},
+                         outputs={"MAINT_GOODS": 6}, short="MNT"),
+
+        # --- Habitation (population capacity infrastructure) ---
+        ProductionMethod("habitation", "Habitation Complex",
+                         inputs={"LABOR": 4}, outputs={},
+                         short="HAB"),
+
         # --- Logistical & Military Asset Units (shipyards only) ---
         ProductionMethod("cargo_yard", "Cargo Shipyard",
                          inputs={"HULLPARTS": 4, "ELECTRONICS": 2, "FUEL": 3,

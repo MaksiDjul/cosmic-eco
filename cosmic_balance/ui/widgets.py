@@ -218,7 +218,7 @@ def line_chart(surf, rect, series_list, fonts, labels=True, zero_base=False,
         text(surf, title, (rect.x + 8, rect.y + 5), fonts.ui_s, T.TEXT_DIM)
 
     plot = pygame.Rect(rect.x + 58, rect.y + (22 if title else 8),
-                       rect.w - 70, rect.h - (34 if title else 20))
+                       rect.w - 70, rect.h - (48 if title else 34))
     if plot.w <= 4 or plot.h <= 4:
         return
 
@@ -257,6 +257,24 @@ def line_chart(surf, rect, series_list, fonts, labels=True, zero_base=False,
             pts.append((x, y))
         if len(pts) > 1:
             pygame.draw.aalines(surf, color, False, pts)
+
+    # X-axis tick labels (tick numbers from the first series)
+    if labels:
+        ref_series = live[0][0]
+        ticks = [t for t, _ in ref_series.points]
+        n = len(ticks)
+        if n >= 2:
+            step = plot.w / max(1, n - 1)
+            num_labels = max(2, min(6, n))
+            label_step = max(1, (n - 1) // (num_labels - 1))
+            for j in range(0, n, label_step):
+                x = int(plot.x + j * step)
+                text(surf, str(ticks[j]),
+                     (x - 10, plot.bottom + 3), fonts.tiny, T.TEXT_FAINT)
+            if (n - 1) % label_step != 0:
+                x = int(plot.x + (n - 1) * step)
+                text(surf, str(ticks[-1]),
+                     (x - 10, plot.bottom + 3), fonts.tiny, T.TEXT_FAINT)
 
 
 def spark(surf, rect, values, color=T.CHART_LINE, base=None):

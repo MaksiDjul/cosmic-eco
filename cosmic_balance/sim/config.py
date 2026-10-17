@@ -92,6 +92,8 @@ COMMODITY_DEFS = [
     ("FOOD",        "SUSTENANCE", "Food Rations",          960,     190,    12_000, True,  1),
     ("GOODS",       "SUSTENANCE", "Consumer Goods",      6_300,   1_200,    70_000, True,  1),
 
+    ("MAINT_GOODS", "REFINED",    "Maintenance Supplies", 5_000,   1_000,    55_000, True,  1),
+
     ("LABOR",       "UTILITY",    "Labour Units",        1_900,     350,    22_000, False, 0),
 ]
 
@@ -130,12 +132,12 @@ SUSTENANCE_WEIGHT_BP = {
 
 # Single-clearing-price settlement. The price for the NEXT tick is nudged by
 # the imbalance ratio of the order book that just cleared.
-MARKET_PRICE_DAMPING_BP = 1_800   # move 18% of the way toward the imbalance
-MARKET_MAX_MOVE_BP = 1_200        # price may never move more than 12% per tick
+MARKET_PRICE_DAMPING_BP = 900     # move 9% of the way toward the imbalance
+MARKET_MAX_MOVE_BP = 600          # price may never move more than 6% per tick
 
 # Explosion Safeguard (doc 3.2): when one side of the book is EMPTY the price
 # must not jump to the clamp instantly -- it creeps at a bounded pace.
-MARKET_EMPTY_SIDE_STEP_BP = 300   # 3% per tick while a side stays empty
+MARKET_EMPTY_SIDE_STEP_BP = 150   # 1.5% per tick while a side stays empty
 MARKET_EMPTY_BOTH_DECAY_BP = 60   # 0.6%/tick pull toward the base anchor when
                                   # nobody trades at all
 
@@ -157,7 +159,7 @@ MARKET_EMPTY_BOTH_DECAY_BP = 60   # 0.6%/tick pull toward the base anchor when
 # therefore preserves the chain's relative structure -- keeping each processing
 # stage viable -- while letting the absolute price level float with wages and
 # letting genuine local scarcity push prices well away from the anchor.
-MARKET_ANCHOR_PULL_BP = 400       # 4%/tick pull toward the cost-of-production
+MARKET_ANCHOR_PULL_BP = 250       # 2.5%/tick pull toward the cost-of-production
 MARKET_ANCHOR_WAGE_KEY = "LABOR"
 
 # Order-book hygiene
@@ -283,6 +285,28 @@ CONDITION_MIN_EFFICIENCY_BP = 5_000   # a wrecked station still manages 50%
 # and condition stayed pinned at zero -- permanently, even with metal going
 # begging three jumps away. Partial upkeep now buys partial recovery.
 CONDITION_PARTIAL_REPAIR = True
+
+# MAINTENANCE GOODS system: stations consume MAINT_GOODS to stay operational.
+# Missed deliveries accumulate and eventually force a downgrade.
+MAINT_GOODS_PER_LEVEL = 1            # units of MAINT_GOODS consumed per level/tick
+MAINT_MISSED_DOWNGRADE = 100         # accumulated misses that trigger downgrade
+MAINT_BUFFER_TICKS = 12              # ordering look-ahead for MAINT_GOODS
+
+# STATION AUTO-DOWNGRADE: every N ticks a station checks whether to shed a level.
+STATION_DOWNGRADE_INTERVAL = 5       # ticks between downgrade reviews
+STATION_DOWNGRADE_BAD_TICKS = 5      # required bad ticks before downgrade
+
+# HABITATION: population capacity is bounded by habitation infrastructure.
+HABITATION_POP_PER_LEVEL = 1_000     # max citizens per habitation-station level
+HABITATION_METHOD_KEY = "habitation"  # the production method key for habitation
+
+# TIERED STARVATION: population shrinks when food satisfaction drops below
+# these thresholds, at the given multiplier per tick (in BP).
+STARVATION_TIERS = [
+    (2_500, 9_600),    # <25% food → multiply by 0.96
+    (5_000, 9_800),    # <50% food → multiply by 0.98
+    (7_500, 9_900),    # <75% food → multiply by 0.99
+]
 
 # Property tax (doc 3.3): paid to the sector lord when the station's
 # controlling owner is NOT the sovereign of the sector it sits in.

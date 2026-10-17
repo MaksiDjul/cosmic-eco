@@ -116,6 +116,10 @@ def census(world):
     for k, bp_total in maint_bp.items():
         used[k] += bp_total // config.BP
 
+    # MAINT_GOODS consumption: every station consumes per level per tick.
+    total_levels = sum(max(1, st.level) for st in world.stations)
+    used["MAINT_GOODS"] += total_levels * config.MAINT_GOODS_PER_LEVEL
+
     for p in world.pops:
         made["LABOR"] += p.labor_output()
         for k, per in config.SUSTENANCE_NEEDS.items():
@@ -395,6 +399,37 @@ def balance_scenario(world, add_station, add_pop, labor_slack_bp=11_500,
             ore_need = PRODUCTION_METHODS["smelter"].inputs.get("ORE", 0) *                 smelter_levels
             if ore_need > 0 and raise_capacity(world, add_station, sector,
                                                "ore_mine", "ORE", ore_need):
+                changed = True
+
+        # --- B2b. LOCAL MAINT_GOODS self-sufficiency ----------------------
+        for sector in world.galaxy:
+            if not sector.stations:
+                continue
+            total_levels = sum(max(1, st.level) for st in sector.stations)
+            mg_need = total_levels * config.MAINT_GOODS_PER_LEVEL
+            mg_need = (mg_need * CAPACITY_HEADROOM_BP) // config.BP
+            if mg_need <= 0:
+                continue
+            mg_have = local_output(sector, "MAINT_GOODS")
+            if mg_have >= mg_need:
+                continue
+            if raise_capacity(world, add_station, sector, "maint_workshop",
+                              "MAINT_GOODS", mg_need):
+                changed = True
+
+        # --- B3. HABITATION for every populated sector --------------------
+        for sector in world.galaxy:
+            pop = sector.population
+            if pop <= 0:
+                continue
+            hab_cap = sum(max(1, st.level) * config.HABITATION_POP_PER_LEVEL
+                          for st in sector.stations
+                          if st.method.key == config.HABITATION_METHOD_KEY)
+            if hab_cap >= pop:
+                continue
+            levels_need = -(-pop // config.HABITATION_POP_PER_LEVEL)
+            if raise_capacity(world, add_station, sector, "habitation",
+                              "LABOR", levels_need):
                 changed = True
 
         # --- C. GALAXY-WIDE balance for everything tradeable ------------

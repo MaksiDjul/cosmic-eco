@@ -42,6 +42,7 @@ class Context:
         self.faction = world.player_key
         self.overlay = "owner"
         self.messages = []
+        self.pending_found = None
 
     # -- the ONLY write path into the simulation -------------------------
     def push(self, kind, **args):
